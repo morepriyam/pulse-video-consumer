@@ -1,6 +1,11 @@
-import { SQSClient, ReceiveMessageCommand } from "@aws-sdk/client-sqs";
+import {
+  SQSClient,
+  ReceiveMessageCommand,
+  DeleteMessageCommand,
+} from "@aws-sdk/client-sqs";
 import dotenv from "dotenv";
 import { S3Event } from "aws-lambda";
+import { ECSClient, RunTaskCommand } from "@aws-sdk/client-ecs";
 
 dotenv.config();
 
@@ -19,6 +24,14 @@ console.log("SQS_QUEUE_URL:", process.env.SQS_QUEUE_URL);
 console.log("========================");
 
 const sqsClient = new SQSClient({
+  region: process.env.AWS_REGION!,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  },
+});
+
+const ecsClient = new ECSClient({
   region: process.env.AWS_REGION!,
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
@@ -63,6 +76,13 @@ async function main() {
         const event = JSON.parse(Body) as S3Event;
         if ("Service" in event && "Event" in message) {
           if (message.Event === "s3:TestEvent") {
+            //Delete this message from the queue
+            await sqsClient.send(
+              new DeleteMessageCommand({
+                QueueUrl: process.env.SQS_QUEUE_URL!,
+                ReceiptHandle: message.ReceiptHandle,
+              })
+            );
             console.log("Test event received");
             continue;
           }
@@ -74,14 +94,62 @@ async function main() {
             bucket,
             object: { key },
           } = s3;
-        }
 
-        // Spin the docker container with the event
+          const runTaskCommand = new RunTaskCommand({
+            taskDefinition: process.env.TASK_DEFINITION!,
+            cluster: process.env.CLUSTER!,
+            launchType: "FARGATE",
+            networkConfiguration: {
+              awsvpcConfiguration: {
+                assignPublicIp: "ENABLED",
+                subnets: process.env.SUBNET_IDS?.split(","),
+                securityGroups: process.env.SECURITY_GROUP_IDS?.split(","),
+              },
+            },
+            overrides: {
+              containerOverrides: [
+                {
+                  name: "video-transcoder",
+                  environment: [
+                    { name: "BUCKET_NAME", value: bucket.name },
+                    { name: "KEY", value: key },
+                  ],
+                },
+              ],
+            },
+          });
+
+          try {
+            // Execute the ECS task
+            const taskResponse = await ecsClient.send(runTaskCommand);
+            console.log(
+              `Started ECS task for ${bucket.name}/${key}:`,
+              taskResponse
+            );
+
+            //Delete this message from the queue
+            await sqsClient.send(
+              new DeleteMessageCommand({
+                QueueUrl: process.env.SQS_QUEUE_URL!,
+                ReceiptHandle: message.ReceiptHandle,
+              })
+            );
+            console.log(
+              `Successfully processed and deleted message for ${bucket.name}/${key}`
+            );
+          } catch (taskError) {
+            console.error(
+              `Failed to start ECS task for ${bucket.name}/${key}:`,
+              taskError
+            );
+            // Don't delete the message if the task failed - let it retry
+            throw taskError;
+          }
+        }
       }
     } catch (error) {
       console.error("Error in SQS polling:", error);
       console.log("Waiting 5 seconds before retry...");
-      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
   }
 }

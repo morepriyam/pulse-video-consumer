@@ -6,13 +6,14 @@ const {
 const dotenv = require("dotenv");
 const path = require("node:path");
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
 const { spawn } = require("child_process");
 
 dotenv.config();
 
 const BUCKET = process.env.BUCKET_NAME;
 const KEY = process.env.KEY;
-const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET_NAME || BUCKET;
+const OUTPUT_BUCKET = BUCKET;
 
 async function init() {
   console.log("Starting video transcoding process...");
@@ -22,10 +23,7 @@ async function init() {
     // Initialize S3 client
     const s3Client = new S3Client({
       region: process.env.AWS_REGION,
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      },
+      // Use ECS task role instead of explicit credentials
     });
     // Create directories
     await fs.mkdir("videos", { recursive: true });
@@ -51,18 +49,47 @@ async function init() {
 
     // Upload the HLS files to S3
     console.log("Uploading HLS files to S3...");
+    const outputDir = "output";
+    const outputKey = `production/${KEY.replace(".mp4", "/master.m3u8")}`; // Save in production folder
+
     const putObjectCommand = new PutObjectCommand({
       Bucket: OUTPUT_BUCKET,
-      Key: KEY,
-      Body: fs.createReadStream(path.join(outputDir, "master.m3u8")),
+      Key: outputKey,
+      Body: fsSync.createReadStream(path.join(outputDir, "master.m3u8")),
+      ContentType: "application/vnd.apple.mpegurl",
     });
 
     await s3Client.send(putObjectCommand);
-    console.log("HLS files uploaded successfully");
+    console.log(
+      `HLS master playlist uploaded successfully to s3://${OUTPUT_BUCKET}/${outputKey}`
+    );
+
+    // Upload all segment files
+    const segmentFiles = await fs.readdir(outputDir, { recursive: true });
+    for (const file of segmentFiles) {
+      if (file.endsWith(".ts") || file.endsWith(".m3u8")) {
+        const filePath = path.join(outputDir, file);
+        const segmentKey = `production/${KEY.replace(".mp4", `/${file}`)}`;
+
+        const segmentCommand = new PutObjectCommand({
+          Bucket: OUTPUT_BUCKET,
+          Key: segmentKey,
+          Body: fsSync.createReadStream(filePath),
+          ContentType: file.endsWith(".ts")
+            ? "video/mp2t"
+            : "application/vnd.apple.mpegurl",
+        });
+
+        await s3Client.send(segmentCommand);
+        console.log(`Uploaded ${file} to s3://${OUTPUT_BUCKET}/${segmentKey}`);
+      }
+    }
 
     // Cleanup
     console.log("Cleaning up temporary files...");
-    await cleanup();
+    await fs.rm("videos", { recursive: true, force: true });
+    await fs.rm("output", { recursive: true, force: true });
+    console.log("Cleanup completed");
   } catch (error) {
     console.error("Error during transcoding:", error);
 
