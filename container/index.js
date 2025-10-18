@@ -102,10 +102,10 @@ async function transcodeToHLS(inputPath) {
 
   // Define resolutions
   const resolutions = [
-    { name: "1080p", width: 1920, height: 1080, bitrate: "5000k" },
-    { name: "720p", width: 1280, height: 720, bitrate: "2500k" },
-    { name: "480p", width: 854, height: 480, bitrate: "1000k" },
-    { name: "360p", width: 640, height: 360, bitrate: "500k" },
+    { name: "1440p", height: 1440, bitrate: "8000k" },
+    { name: "1080p", height: 1080, bitrate: "5000k" },
+    { name: "720p", height: 720, bitrate: "2500k" },
+    { name: "480p", height: 480, bitrate: "1000k" },
   ];
 
   // Create master playlist
@@ -128,8 +128,8 @@ async function transcodeToHLS(inputPath) {
       "aac",
       "-b:v",
       resolution.bitrate,
-      "-s",
-      `${resolution.width}x${resolution.height}`,
+      "-vf",
+      `scale=-2:${resolution.height}`, // Preserve aspect ratio, scale height
       "-hls_time",
       "10",
       "-hls_playlist_type",
@@ -146,10 +146,10 @@ async function transcodeToHLS(inputPath) {
 
       ffmpeg.on("close", (code) => {
         if (code === 0) {
-          // Add to master playlist
+          // Add to master playlist (resolution will be determined from actual output)
           masterPlaylist += `#EXT-X-STREAM-INF:BANDWIDTH=${
             parseInt(resolution.bitrate) * 1000
-          },RESOLUTION=${resolution.width}x${resolution.height}\n`;
+          }\n`;
           masterPlaylist += `${resolution.name}/playlist.m3u8\n`;
           resolve();
         } else {
