@@ -50,7 +50,9 @@ async function init() {
     // Upload the HLS files to S3
     console.log("Uploading HLS files to S3...");
     const outputDir = "output";
-    const outputKey = `production/${KEY.replace(".mp4", "")}/master.m3u8`; // Save in production folder
+    // Strip pulsecam/ prefix and .mp4 extension to get clean draftId
+    const cleanKey = KEY.replace("pulsecam/", "").replace(".mp4", "");
+    const outputKey = `production/${cleanKey}/master.m3u8`; // Save in production folder
 
     const putObjectCommand = new PutObjectCommand({
       Bucket: OUTPUT_BUCKET,
@@ -69,7 +71,7 @@ async function init() {
     for (const file of segmentFiles) {
       if (file.endsWith(".ts") || file.endsWith(".m3u8")) {
         const filePath = path.join(outputDir, file);
-        const segmentKey = `production/${KEY.replace(".mp4", "")}/${file}`;
+        const segmentKey = `production/${cleanKey}/${file}`;
 
         const segmentCommand = new PutObjectCommand({
           Bucket: OUTPUT_BUCKET,
